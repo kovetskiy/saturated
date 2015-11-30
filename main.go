@@ -87,9 +87,9 @@ func main() {
 
 	buildUid, _ := strconv.Atoi(buildUser.Uid)
 
-	err = checkSetuid(buildUid)
+	err = checkSeteuid(buildUid)
 	if err != nil {
-		log.Fatalf("setuid %d check failed: %s", buildUid, err)
+		log.Fatal(err)
 	}
 
 	handler := &BuildHandler{
@@ -110,16 +110,27 @@ func main() {
 	}
 }
 
-// checkSetuid calls syscall SYS_SETUID in safe mode (in additional goroutine)
-func checkSetuid(uid int) (err error) {
+// checkSeteuid calls syscall SYS_SETREUID in additional goroutine with new uid
+// and tries to restore original euid
+func checkSeteuid(uid int) (err error) {
 	waiting := sync.WaitGroup{}
 	waiting.Add(1)
 
 	go func() {
 		defer waiting.Done()
 
+		olduid := syscall.Getuid()
+
 		// be aware, err is named returning variable and changes by reference
-		err = rawSetuid(uid)
+		err = rawSeteuid(uid)
+		if err != nil {
+			err = fmt.Errorf("can't setuid to %d: %s", uid, err)
+		}
+
+		err = rawSeteuid(olduid)
+		if err != nil {
+			err = fmt.Errorf("can't restore uid to %d: %s", olduid, err)
+		}
 	}()
 
 	waiting.Wait()
@@ -185,7 +196,7 @@ func (handler *BuildHandler) ServeHTTP(
 
 	runtime.LockOSThread()
 
-	err = rawSetuid(handler.buildUid)
+	err = rawSeteuid(handler.buildUid)
 	if err != nil {
 		response.WriteHeader(http.StatusInternalServerError)
 		fmt.Fprintf(
@@ -243,8 +254,8 @@ func runBuild(
 	return nil
 }
 
-func rawSetuid(uid int) error {
-	_, _, errno := syscall.RawSyscall(syscall.SYS_SETUID, uintptr(uid), 0, 0)
+func rawSeteuid(uid int) error {
+	_, _, errno := syscall.RawSyscall(syscall.SYS_SETREUID, uintptr(uid), 0, 0)
 	if errno != 0 {
 		return errno
 	}
